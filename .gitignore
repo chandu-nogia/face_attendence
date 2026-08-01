@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Secrets — keep .env.example in git
+.env
+.env.local
+.env.*.local
+
+# Local MongoDB install + data (do not push)
+.mongo/
+data/
+
+# Uploads / temp
+uploads/
+tmp/
+temp/
+
+# Logs
+*.log
+logs/
+
+# Test / build
+coverage/
+dist/
+.npm/
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
