@@ -1,0 +1,32 @@
+# Render Blueprint — secrets (MONGODB_URI, JWT_*, REDIS_URL) set in Dashboard.
+# https://render.com/docs/blueprint-spec
+#
+# Flow: git push → GitHub Actions CI → Render deploys after checks pass
+services:
+  - type: web
+    name: face-attendence
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      - key: CORS_ORIGIN
+        value: '*'
+      - key: FACE_MATCH_THRESHOLD
+        value: '0.85'
+      - key: REDIS_URL
+        sync: false

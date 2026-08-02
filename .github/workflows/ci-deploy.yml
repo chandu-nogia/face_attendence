@@ -1,0 +1,58 @@
+# Push to main → GitHub Actions CI → Render auto-deploys when checks pass
+#
+# One-time Render setup (Dashboard → face-attendence → Settings):
+#   Auto-Deploy → "After CI Checks Pass"
+#   Repo linked: github.com/chandu-nogia/face_attendence (branch: main)
+#
+# Optional fallback (if Auto-Deploy is Off): add GitHub secret
+#   RENDER_DEPLOY_HOOK_URL = Deploy Hook from Render Settings
+
+name: CI and Deploy to Render
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: render-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check
+        run: node --check server.js
+
+  deploy:
+    name: Deploy hook (optional)
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "No RENDER_DEPLOY_HOOK_URL — using Render Auto-Deploy (After CI Checks Pass)."
+            exit 0
+          fi
+          echo "Triggering Render deploy via hook..."
+          curl -fsS -X POST "$DEPLOY_HOOK"
+          echo "Deploy triggered."
