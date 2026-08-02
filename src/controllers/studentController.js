@@ -8,6 +8,7 @@ const createSchema = Joi.object({
   rollNo: Joi.string().required(),
   classId: Joi.string().required(),
   parentContact: Joi.string().allow('', null),
+  parentEmail: Joi.string().email().allow('', null),
   faceEmbedding: Joi.array().items(Joi.number()).optional(),
   photoUrls: Joi.array().items(Joi.string()).optional(),
 });
@@ -53,7 +54,18 @@ async function listStudents(req, res, next) {
 
 async function updateStudent(req, res, next) {
   try {
-    const allowed = ['name', 'rollNo', 'parentContact', 'status', 'classId', 'faceEmbedding', 'photoUrls'];
+    const allowed = [
+      'name',
+      'rollNo',
+      'parentContact',
+      'parentEmail',
+      'parentUserId',
+      'status',
+      'classId',
+      'faceEmbedding',
+      'photoUrls',
+      'leaveBalance',
+    ];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];

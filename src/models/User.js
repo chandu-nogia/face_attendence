@@ -6,9 +6,20 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
-    role: { type: String, enum: ['admin', 'teacher'], default: 'teacher' },
+    role: {
+      type: String,
+      enum: ['admin', 'teacher', 'principal', 'parent', 'student'],
+      default: 'teacher',
+    },
+    phone: { type: String, trim: true },
     classesAssigned: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
+    /** Parent → linked student records */
+    linkedStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }],
+    /** Student-role user → their Student profile */
+    studentProfileId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' },
     fcmToken: { type: String },
+    deviceIds: [{ type: String }],
+    isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
 );
@@ -27,7 +38,11 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     name: this.name,
     email: this.email,
     role: this.role,
+    phone: this.phone,
     classesAssigned: this.classesAssigned,
+    linkedStudents: this.linkedStudents,
+    studentProfileId: this.studentProfileId,
+    isActive: this.isActive,
     createdAt: this.createdAt,
   };
 };

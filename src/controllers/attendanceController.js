@@ -2,6 +2,7 @@ const Joi = require('joi');
 const rateLimit = require('express-rate-limit');
 const Attendance = require('../models/Attendance');
 const Student = require('../models/Student');
+const Holiday = require('../models/Holiday');
 const { findBestMatch } = require('../services/faceMatchService');
 const { cacheGet, cacheSet, cacheDel } = require('../config/redis');
 const {
@@ -13,6 +14,9 @@ const {
   dayjs,
 } = require('../services/timeFormatService');
 const { emitAttendanceEvent } = require('../socket/socketHandler');
+const { getSettings } = require('../services/settingsService');
+const { notifyParentOfAttendance } = require('../services/notificationService');
+const { logAudit } = require('../services/auditService');
 
 const markLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -26,10 +30,10 @@ function attendanceCacheKey(date, studentId) {
   return `attendance:${date}:${studentId}`;
 }
 
-function resolveStatus(checkInTime) {
-  const startH = Number(process.env.SCHOOL_START_HOUR || 8);
-  const startM = Number(process.env.SCHOOL_START_MINUTE || 0);
-  const lateAfter = Number(process.env.LATE_AFTER_MINUTES || 15);
+async function resolveStatus(checkInTime, settings) {
+  const startH = settings?.schoolStartHour ?? Number(process.env.SCHOOL_START_HOUR || 8);
+  const startM = settings?.schoolStartMinute ?? Number(process.env.SCHOOL_START_MINUTE || 0);
+  const lateAfter = settings?.lateAfterMinutes ?? Number(process.env.LATE_AFTER_MINUTES || 15);
   const threshold = dayjs(checkInTime)
     .hour(startH)
     .minute(startM)
@@ -44,11 +48,40 @@ async function markAttendance(req, res, next) {
       embedding: Joi.array().items(Joi.number()).min(1).required(),
       classId: Joi.string().allow(null, ''),
       threshold: Joi.number().min(0).max(1).optional(),
+      periodId: Joi.string().allow(null, ''),
+      livenessPassed: Joi.boolean().optional(),
+      deviceId: Joi.string().allow(null, ''),
     });
     const { error, value } = schema.validate(req.body);
     if (error) return res.status(400).json({ success: false, message: error.message });
 
-    const match = await findBestMatch(value.embedding, value.classId || null, value.threshold);
+    const settings = await getSettings();
+    const date = todayDateString();
+    const holiday = await Holiday.findOne({ date, type: 'holiday' });
+    if (holiday) {
+      return res.status(400).json({
+        success: false,
+        message: `Holiday today: ${holiday.name}. Attendance not required.`,
+      });
+    }
+
+    if (settings.requireLiveness && value.livenessPassed === false) {
+      return res.status(400).json({
+        success: false,
+        message: 'Liveness check failed. Please blink or turn head.',
+      });
+    }
+
+    if (
+      settings.kioskAllowedDeviceIds?.length &&
+      value.deviceId &&
+      !settings.kioskAllowedDeviceIds.includes(value.deviceId)
+    ) {
+      return res.status(403).json({ success: false, message: 'Device not authorized for kiosk' });
+    }
+
+    const threshold = value.threshold ?? settings.faceMatchThreshold;
+    const match = await findBestMatch(value.embedding, value.classId || null, threshold);
     if (!match.matched) {
       return res.status(404).json({
         success: false,
@@ -58,7 +91,6 @@ async function markAttendance(req, res, next) {
     }
 
     const student = match.student;
-    const date = todayDateString();
     const cacheKey = attendanceCacheKey(date, student._id);
     const cached = await cacheGet(cacheKey);
     if (cached) {
@@ -89,7 +121,7 @@ async function markAttendance(req, res, next) {
     }
 
     const now = new Date();
-    const status = resolveStatus(now);
+    const status = await resolveStatus(now, settings);
     let attendance;
     if (existing) {
       existing.checkInTime = now;
@@ -116,6 +148,14 @@ async function markAttendance(req, res, next) {
       student: { id: student._id, name: student.name, rollNo: student.rollNo },
     });
 
+    const fullStudent = await Student.findById(student._id);
+    notifyParentOfAttendance({
+      student: fullStudent || student,
+      event: 'checkin',
+      timeLabel: toAmPm(now),
+      settings,
+    }).catch(() => {});
+
     res.status(201).json({
       success: true,
       alreadyMarked: false,
@@ -125,6 +165,7 @@ async function markAttendance(req, res, next) {
         student: { id: student._id, name: student.name, rollNo: student.rollNo, classId: student.classId },
         confidence: match.confidence,
         checkInTime: toAmPm(now),
+        status,
       },
     });
   } catch (err) {
@@ -174,6 +215,15 @@ async function checkout(req, res, next) {
 
     const formatted = formatAttendanceDoc(attendance);
     emitAttendanceEvent('attendance:updated', { attendance: formatted });
+
+    const settings = await getSettings();
+    const fullStudent = await Student.findById(student._id);
+    notifyParentOfAttendance({
+      student: fullStudent || student,
+      event: 'checkout',
+      timeLabel: toAmPm(attendance.checkOutTime),
+      settings,
+    }).catch(() => {});
 
     res.json({
       success: true,
@@ -254,6 +304,13 @@ async function updateAttendance(req, res, next) {
     }
 
     await attendance.save();
+    await logAudit({
+      actorId: req.user._id,
+      action: 'attendance.edit',
+      entityType: 'Attendance',
+      entityId: attendance._id,
+      meta: req.body,
+    });
     const formatted = formatAttendanceDoc(attendance);
     emitAttendanceEvent('attendance:updated', { attendance: formatted });
     res.json({ success: true, data: formatted });

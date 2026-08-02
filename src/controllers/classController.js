@@ -49,10 +49,17 @@ async function getClass(req, res, next) {
 
 async function updateClass(req, res, next) {
   try {
-    const klass = await Class.findByIdAndUpdate(req.params.id, req.body, {
+    const allowed = ['name', 'section', 'teacherId'];
+    const updates = {};
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) updates[k] = req.body[k] || null;
+    }
+    const klass = await Class.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
-    });
+    })
+      .populate('teacherId', 'name email')
+      .populate('students', 'name rollNo status');
     if (!klass) return res.status(404).json({ success: false, message: 'Class not found' });
     res.json({ success: true, data: klass });
   } catch (err) {
@@ -60,4 +67,21 @@ async function updateClass(req, res, next) {
   }
 }
 
-module.exports = { createClass, listClasses, getClass, updateClass };
+async function deleteClass(req, res, next) {
+  try {
+    const klass = await Class.findById(req.params.id);
+    if (!klass) return res.status(404).json({ success: false, message: 'Class not found' });
+    if (klass.students?.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Move or delete students before deleting class',
+      });
+    }
+    await Class.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Class deleted' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { createClass, listClasses, getClass, updateClass, deleteClass };

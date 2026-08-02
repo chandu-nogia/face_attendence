@@ -7,7 +7,15 @@ const notificationSchema = new mongoose.Schema(
     body: { type: String, required: true },
     type: {
       type: String,
-      enum: ['attendance', 'regularization', 'system', 'defaulter'],
+      enum: [
+        'attendance',
+        'regularization',
+        'system',
+        'defaulter',
+        'leave',
+        'announcement',
+        'checkout',
+      ],
       default: 'system',
     },
     data: { type: mongoose.Schema.Types.Mixed },

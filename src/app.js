@@ -11,6 +11,12 @@ const attendanceRoutes = require('./routes/attendanceRoutes');
 const classRoutes = require('./routes/classRoutes');
 const regularizationRoutes = require('./routes/regularizationRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
+const leaveRoutes = require('./routes/leaveRoutes');
+const schoolRoutes = require('./routes/schoolRoutes');
+const announcementRoutes = require('./routes/announcementRoutes');
+const parentRoutes = require('./routes/parentRoutes');
 
 const app = express();
 
@@ -43,6 +49,12 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/regularization', regularizationRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/leaves', leaveRoutes);
+app.use('/api/school', schoolRoutes);
+app.use('/api/announcements', announcementRoutes);
+app.use('/api/parent', parentRoutes);
 
 app.use(errorHandler);
 
