@@ -5,22 +5,65 @@ const logger = require('../utils/logger');
 let redis = null;
 const memoryCache = new Map();
 
+function isLocalRedisUrl(url) {
+  return /127\.0\.0\.1|localhost/i.test(url || '');
+}
+
+/**
+ * Redis is optional.
+ * - Leave REDIS_URL empty → in-memory cache (OK for single Render instance)
+ * - Set REDIS_URL to Upstash / Redis Cloud (`rediss://...`) for real Redis
+ * - On Render, localhost Redis URLs are ignored (common misconfig)
+ */
 async function initRedis() {
-  const url = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+  let url = (process.env.REDIS_URL || '').trim();
+  const explicitlyDisabled =
+    process.env.REDIS_ENABLED === 'false' || process.env.REDIS_ENABLED === '0';
+
+  const onRender = !!(process.env.RENDER || process.env.RENDER_EXTERNAL_URL);
+  if (onRender && isLocalRedisUrl(url)) {
+    logger.warn('REDIS_URL points to localhost on Render — ignoring; using in-memory cache');
+    url = '';
+  }
+
+  if (explicitlyDisabled || !url) {
+    redis = null;
+    logger.info('Redis skipped — using in-memory cache (set REDIS_URL to enable)');
+    return;
+  }
+
+  let client = null;
   try {
-    redis = new Redis(url, {
-      maxRetriesPerRequest: 1,
+    const isTls = url.startsWith('rediss://');
+    client = new Redis(url, {
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false,
       lazyConnect: true,
-      connectTimeout: 3000,
+      connectTimeout: 8000,
+      // Upstash / managed Redis often need TLS; rediss:// enables it
+      tls: isTls ? { rejectUnauthorized: false } : undefined,
+      family: 0, // dual-stack (helps some cloud Redis hosts)
+      retryStrategy: (times) => {
+        if (times > 3) return null;
+        return Math.min(times * 200, 1000);
+      },
     });
-    await redis.connect();
-    redis.on('error', (err) => logger.warn(`Redis error: ${err.message}`));
-    logger.info('Redis connected');
+
+    // Attach before connect so ECONNREFUSED is not an "Unhandled error event"
+    client.on('error', (err) => {
+      logger.warn(`Redis error: ${err.message}`);
+    });
+
+    await client.connect();
+    await client.ping();
+    redis = client;
+    logger.info(`Redis connected (${isTls ? 'TLS' : 'plain'})`);
   } catch (err) {
     logger.warn(`Redis unavailable (${err.message}) — using in-memory cache`);
-    if (redis) {
+    if (client) {
       try {
-        redis.disconnect();
+        client.removeAllListeners();
+        client.disconnect(false);
       } catch (_) {
         /* ignore */
       }
@@ -31,7 +74,11 @@ async function initRedis() {
 
 async function cacheGet(key) {
   if (redis) {
-    return redis.get(key);
+    try {
+      return await redis.get(key);
+    } catch (err) {
+      logger.warn(`Redis GET failed: ${err.message}`);
+    }
   }
   const entry = memoryCache.get(key);
   if (!entry) return null;
@@ -44,8 +91,12 @@ async function cacheGet(key) {
 
 async function cacheSet(key, value, ttlSeconds = 86400) {
   if (redis) {
-    await redis.set(key, value, 'EX', ttlSeconds);
-    return;
+    try {
+      await redis.set(key, value, 'EX', ttlSeconds);
+      return;
+    } catch (err) {
+      logger.warn(`Redis SET failed: ${err.message}`);
+    }
   }
   memoryCache.set(key, {
     value,
@@ -55,8 +106,12 @@ async function cacheSet(key, value, ttlSeconds = 86400) {
 
 async function cacheDel(key) {
   if (redis) {
-    await redis.del(key);
-    return;
+    try {
+      await redis.del(key);
+      return;
+    } catch (err) {
+      logger.warn(`Redis DEL failed: ${err.message}`);
+    }
   }
   memoryCache.delete(key);
 }

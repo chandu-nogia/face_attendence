@@ -1,11 +1,20 @@
 const cron = require('node-cron');
 const Student = require('../models/Student');
 const Attendance = require('../models/Attendance');
-const { todayDateString } = require('../services/timeFormatService');
+const { todayDateString, dayjs } = require('../services/timeFormatService');
 const { emitAttendanceEvent } = require('../socket/socketHandler');
+const { getSettings } = require('../services/settingsService');
+const { getDayAnchors } = require('../services/timingService');
 const logger = require('../utils/logger');
 
 async function markAbsentees() {
+  const settings = await getSettings();
+  const anchors = getDayAnchors(settings, new Date());
+  if (dayjs().isBefore(anchors.autoAbsentAt)) {
+    logger.info(`Auto-absent cron: skipped until ${anchors.autoAbsentAt.format('h:mm A')}`);
+    return 0;
+  }
+
   const date = todayDateString();
   const students = await Student.find({ status: 'active' }).select('_id classId');
   let marked = 0;
@@ -28,10 +37,12 @@ async function markAbsentees() {
     }
   }
   logger.info(`Auto-absent cron: marked ${marked} students absent for ${date}`);
+  return marked;
 }
 
 function startCronJobs() {
-  const schedule = process.env.AUTO_ABSENT_CRON || '0 18 * * 1-5';
+  // Run hourly; actual marking waits for autoAbsentAt from school settings
+  const schedule = process.env.AUTO_ABSENT_CRON || '5 * * * 1-5';
   if (!cron.validate(schedule)) {
     logger.warn(`Invalid AUTO_ABSENT_CRON: ${schedule}`);
     return;

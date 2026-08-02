@@ -3,11 +3,14 @@ const Holiday = require('../models/Holiday');
 const Period = require('../models/Period');
 const { getSettings, invalidateSettingsCache } = require('../services/settingsService');
 const { listAuditLogs, logAudit } = require('../services/auditService');
+const { buildTimingSummary } = require('../services/timingService');
 
 async function getSchoolSettings(req, res, next) {
   try {
     const data = await getSettings();
-    res.json({ success: true, data });
+    const json = data.toObject ? data.toObject() : { ...data };
+    json.timingSummary = buildTimingSummary(json);
+    res.json({ success: true, data: json });
   } catch (err) {
     next(err);
   }
@@ -21,8 +24,13 @@ async function updateSchoolSettings(req, res, next) {
       'schoolEndHour',
       'schoolEndMinute',
       'lateAfterMinutes',
+      'checkInOpensMinutesBefore',
+      'earlyLeaveMinutes',
+      'checkoutGraceMinutes',
+      'blockCheckInAfterLateMinutes',
       'halfDayAfterHours',
       'autoAbsentHour',
+      'autoAbsentMinute',
       'faceMatchThreshold',
       'requireLiveness',
       'notifyParentOnCheckIn',
@@ -38,6 +46,26 @@ async function updateSchoolSettings(req, res, next) {
     for (const k of allowed) {
       if (req.body[k] !== undefined) updates[k] = req.body[k];
     }
+
+    // Basic validation for time fields
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, Number(v)));
+    if (updates.schoolStartHour !== undefined) updates.schoolStartHour = clamp(updates.schoolStartHour, 0, 23);
+    if (updates.schoolEndHour !== undefined) updates.schoolEndHour = clamp(updates.schoolEndHour, 0, 23);
+    if (updates.schoolStartMinute !== undefined) updates.schoolStartMinute = clamp(updates.schoolStartMinute, 0, 59);
+    if (updates.schoolEndMinute !== undefined) updates.schoolEndMinute = clamp(updates.schoolEndMinute, 0, 59);
+    if (updates.autoAbsentHour !== undefined) updates.autoAbsentHour = clamp(updates.autoAbsentHour, 0, 23);
+    if (updates.autoAbsentMinute !== undefined) updates.autoAbsentMinute = clamp(updates.autoAbsentMinute, 0, 59);
+    if (updates.lateAfterMinutes !== undefined) updates.lateAfterMinutes = clamp(updates.lateAfterMinutes, 0, 240);
+    if (updates.checkInOpensMinutesBefore !== undefined) {
+      updates.checkInOpensMinutesBefore = clamp(updates.checkInOpensMinutesBefore, 0, 360);
+    }
+    if (updates.earlyLeaveMinutes !== undefined) updates.earlyLeaveMinutes = clamp(updates.earlyLeaveMinutes, 0, 360);
+    if (updates.checkoutGraceMinutes !== undefined) {
+      updates.checkoutGraceMinutes = clamp(updates.checkoutGraceMinutes, 0, 240);
+    }
+    if (updates.blockCheckInAfterLateMinutes !== undefined) {
+      updates.blockCheckInAfterLateMinutes = clamp(updates.blockCheckInAfterLateMinutes, 0, 480);
+    }
     const settings = await getSettings();
     Object.assign(settings, updates);
     await settings.save();
@@ -49,7 +77,9 @@ async function updateSchoolSettings(req, res, next) {
       entityId: settings._id,
       meta: updates,
     });
-    res.json({ success: true, data: settings });
+    const json = settings.toObject();
+    json.timingSummary = buildTimingSummary(json);
+    res.json({ success: true, data: json });
   } catch (err) {
     next(err);
   }

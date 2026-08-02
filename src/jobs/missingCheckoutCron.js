@@ -1,10 +1,20 @@
 const cron = require('node-cron');
 const Attendance = require('../models/Attendance');
-const { todayDateString } = require('../services/timeFormatService');
-const { createNotification } = require('../services/notificationService');
+const { todayDateString, dayjs } = require('../services/timeFormatService');
+const { getSettings } = require('../services/settingsService');
+const { getDayAnchors } = require('../services/timingService');
 const logger = require('../utils/logger');
 
 async function flagMissingCheckouts() {
+  const settings = await getSettings();
+  const anchors = getDayAnchors(settings, new Date());
+  if (dayjs().isBefore(anchors.checkoutDeadline)) {
+    logger.info(
+      `Missing checkout cron: skipped (deadline ${anchors.checkoutDeadline.format('h:mm A')})`
+    );
+    return 0;
+  }
+
   const date = todayDateString();
   const records = await Attendance.find({
     date,
@@ -23,10 +33,12 @@ async function flagMissingCheckouts() {
     }
   }
   logger.info(`Missing checkout cron: flagged ${flagged} students for ${date}`);
+  return flagged;
 }
 
 function startMissingCheckoutCron() {
-  const schedule = process.env.MISSING_CHECKOUT_CRON || '0 17 * * 1-5';
+  // Every 15 min on weekdays — actual flagging waits until checkoutDeadline
+  const schedule = process.env.MISSING_CHECKOUT_CRON || '*/15 12-20 * * 1-5';
   if (!cron.validate(schedule)) {
     logger.warn(`Invalid MISSING_CHECKOUT_CRON: ${schedule}`);
     return;

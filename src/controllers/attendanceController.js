@@ -18,6 +18,7 @@ const { getSettings } = require('../services/settingsService');
 const { notifyParentOfAttendance } = require('../services/notificationService');
 const { logAudit } = require('../services/auditService');
 const { getScopedClassIds, assertClassAccess, assertAttendanceAccess, applyAttendanceScope } = require('../utils/scopeHelper');
+const { resolveCheckInStatus, resolveStatusAfterCheckout } = require('../services/timingService');
 
 const markLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -29,18 +30,6 @@ const markLimiter = rateLimit({
 
 function attendanceCacheKey(date, studentId) {
   return `attendance:${date}:${studentId}`;
-}
-
-async function resolveStatus(checkInTime, settings) {
-  const startH = settings?.schoolStartHour ?? Number(process.env.SCHOOL_START_HOUR || 8);
-  const startM = settings?.schoolStartMinute ?? Number(process.env.SCHOOL_START_MINUTE || 0);
-  const lateAfter = settings?.lateAfterMinutes ?? Number(process.env.LATE_AFTER_MINUTES || 15);
-  const threshold = dayjs(checkInTime)
-    .hour(startH)
-    .minute(startM)
-    .second(0)
-    .add(lateAfter, 'minute');
-  return dayjs(checkInTime).isAfter(threshold) ? 'late' : 'present';
 }
 
 async function markAttendance(req, res, next) {
@@ -129,7 +118,19 @@ async function markAttendance(req, res, next) {
     }
 
     const now = new Date();
-    const status = await resolveStatus(now, settings);
+    const resolved = resolveCheckInStatus(now, settings);
+    if (resolved.blocked) {
+      return res.status(400).json({
+        success: false,
+        message: resolved.message,
+        timing: {
+          checkInOpens: resolved.anchors.checkInOpens.format('h:mm A'),
+          lateAfter: resolved.anchors.lateThreshold.format('h:mm A'),
+          schoolStart: resolved.anchors.start.format('h:mm A'),
+        },
+      });
+    }
+    const status = resolved.status;
     let attendance;
     if (existing) {
       existing.checkInTime = now;
@@ -174,6 +175,7 @@ async function markAttendance(req, res, next) {
         confidence: match.confidence,
         checkInTime: toAmPm(now),
         status,
+        lateReason: resolved.reason,
       },
     });
   } catch (err) {
@@ -223,12 +225,25 @@ async function checkout(req, res, next) {
 
     attendance.checkOutTime = new Date();
     attendance.missingCheckoutFlagged = false;
+
+    const settings = await getSettings();
+    const after = resolveStatusAfterCheckout(attendance, attendance.checkOutTime, settings);
+    if (after.status && after.status !== attendance.status) {
+      attendance.editHistory.push({
+        editedBy: req.user._id,
+        editedAt: new Date(),
+        field: 'status',
+        oldValue: attendance.status,
+        newValue: after.status,
+        reason: after.note || 'Auto half-day from early checkout',
+      });
+      attendance.status = after.status;
+    }
     await attendance.save();
 
     const formatted = formatAttendanceDoc(attendance);
     emitAttendanceEvent('attendance:updated', { attendance: formatted });
 
-    const settings = await getSettings();
     const fullStudent = await Student.findById(student._id);
     notifyParentOfAttendance({
       student: fullStudent || student,
@@ -245,6 +260,8 @@ async function checkout(req, res, next) {
         student: { id: student._id, name: student.name, rollNo: student.rollNo },
         confidence: match.confidence,
         checkOutTime: toAmPm(attendance.checkOutTime),
+        status: attendance.status,
+        note: after.note,
       },
     });
   } catch (err) {
