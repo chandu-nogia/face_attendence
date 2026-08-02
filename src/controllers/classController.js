@@ -64,6 +64,9 @@ async function getClass(req, res, next) {
 
 async function updateClass(req, res, next) {
   try {
+    if (!isElevated(req.user)) {
+      return res.status(403).json({ success: false, message: 'Admin/principal only' });
+    }
     const allowed = ['name', 'section', 'teacherId'];
     const updates = {};
     for (const k of allowed) {

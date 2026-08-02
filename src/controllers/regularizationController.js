@@ -11,6 +11,8 @@ const { logAudit } = require('../services/auditService');
 const {
   isElevated,
   getScopedClassIds,
+  getScopedStudentIds,
+  assertStudentAccess,
   isClassTeacherOfStudent,
 } = require('../utils/scopeHelper');
 
@@ -47,6 +49,9 @@ async function createRequest(req, res, next) {
     });
     const { error, value } = schema.validate(req.body);
     if (error) return res.status(400).json({ success: false, message: error.message });
+
+    const can = await assertStudentAccess(req.user, value.studentId);
+    if (!can) return res.status(403).json({ success: false, message: 'Access denied' });
 
     const request = await RegularizationRequest.create({
       ...value,
@@ -98,6 +103,9 @@ async function getPending(req, res, next) {
           $in: ['pending_teacher', 'pending_principal', 'pending'],
         };
       }
+    } else if (req.user.role === 'parent' || req.user.role === 'student') {
+      const ids = await getScopedStudentIds(req.user);
+      filter.studentId = { $in: ids };
     } else {
       filter.status = { $in: ['pending_teacher', 'pending_principal', 'pending'] };
     }
@@ -123,6 +131,9 @@ async function listAll(req, res, next) {
       const classIds = await getScopedClassIds(req.user);
       const students = await Student.find({ classId: { $in: classIds || [] } }).select('_id');
       filter.studentId = { $in: students.map((s) => s._id) };
+    } else if (req.user.role === 'parent' || req.user.role === 'student') {
+      const ids = await getScopedStudentIds(req.user);
+      filter.studentId = { $in: ids };
     }
 
     const requests = await RegularizationRequest.find(filter)

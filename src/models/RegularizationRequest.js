@@ -35,6 +35,8 @@ const regularizationSchema = new mongoose.Schema(
     reviewedAt: { type: Date },
     reviewNote: { type: String },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    escalatedAt: { type: Date },
+    escalationReason: { type: String },
   },
   { timestamps: true }
 );

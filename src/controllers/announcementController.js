@@ -17,6 +17,20 @@ async function createAnnouncement(req, res, next) {
     const { error, value } = schema.validate(req.body);
     if (error) return res.status(400).json({ success: false, message: error.message });
 
+    if (req.user.role === 'teacher') {
+      if (value.audience === 'all' || value.audience === 'teachers') {
+        return res.status(403).json({
+          success: false,
+          message: 'Teachers may only post to their own class',
+        });
+      }
+      if (value.audience === 'class') {
+        const { assertClassAccess } = require('../utils/scopeHelper');
+        const ok = await assertClassAccess(req.user, value.classId);
+        if (!ok) return res.status(403).json({ success: false, message: 'Not your class' });
+      }
+    }
+
     const ann = await Announcement.create({
       ...value,
       createdBy: req.user._id,

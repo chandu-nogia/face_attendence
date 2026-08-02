@@ -17,7 +17,7 @@ const { emitAttendanceEvent } = require('../socket/socketHandler');
 const { getSettings } = require('../services/settingsService');
 const { notifyParentOfAttendance } = require('../services/notificationService');
 const { logAudit } = require('../services/auditService');
-const { getScopedClassIds } = require('../utils/scopeHelper');
+const { getScopedClassIds, assertClassAccess, assertAttendanceAccess, applyAttendanceScope } = require('../utils/scopeHelper');
 
 const markLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -92,6 +92,13 @@ async function markAttendance(req, res, next) {
     }
 
     const student = match.student;
+    const canClass = await assertClassAccess(req.user, student.classId);
+    if (!canClass) {
+      return res.status(403).json({ success: false, message: 'Student is not in your assigned class' });
+    }
+    if (value.classId && String(value.classId) !== String(student.classId)) {
+      return res.status(403).json({ success: false, message: 'Face matched a student outside selected class' });
+    }
     const cacheKey = attendanceCacheKey(date, student._id);
     const cached = await cacheGet(cacheKey);
     if (cached) {
@@ -190,6 +197,10 @@ async function checkout(req, res, next) {
     }
 
     const student = match.student;
+    const canClass = await assertClassAccess(req.user, student.classId);
+    if (!canClass) {
+      return res.status(403).json({ success: false, message: 'Student is not in your assigned class' });
+    }
     const date = todayDateString();
     const attendance = await Attendance.findOne({ studentId: student._id, date, isDeleted: false });
     if (!attendance || !attendance.checkInTime) {
@@ -245,22 +256,7 @@ async function getToday(req, res, next) {
   try {
     const filter = { date: todayDateString(), isDeleted: false };
     if (req.query.classId) filter.classId = req.query.classId;
-
-    const scoped = await getScopedClassIds(req.user);
-    if (scoped !== null) {
-      if (req.query.classId) {
-        if (!scoped.map(String).includes(String(req.query.classId))) {
-          return res.json({ success: true, data: [] });
-        }
-      } else {
-        filter.classId = { $in: scoped };
-      }
-    }
-
-    if (req.user.role === 'student' && req.user.studentProfileId) {
-      filter.studentId = req.user.studentProfileId;
-      delete filter.classId;
-    }
+    await applyAttendanceScope(req.user, filter);
 
     const records = await Attendance.find(filter)
       .populate('studentId', 'name rollNo')
@@ -282,6 +278,17 @@ async function getReport(req, res, next) {
       if (req.query.from) filter.date.$gte = req.query.from;
       if (req.query.to) filter.date.$lte = req.query.to;
     }
+    await applyAttendanceScope(req.user, filter);
+
+    // Parent/student may only query their own studentId if provided
+    if (req.query.studentId && ['parent', 'student'].includes(req.user.role)) {
+      const scopedIds = filter.studentId?.$in || [];
+      if (scopedIds.length && !scopedIds.map(String).includes(String(req.query.studentId))) {
+        return res.json({ success: true, data: [] });
+      }
+      filter.studentId = req.query.studentId;
+    }
+
     const records = await Attendance.find(filter)
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
@@ -297,6 +304,12 @@ async function updateAttendance(req, res, next) {
     const attendance = await Attendance.findById(req.params.id);
     if (!attendance || attendance.isDeleted) {
       return res.status(404).json({ success: false, message: 'Attendance not found' });
+    }
+    const can = await assertAttendanceAccess(req.user, attendance);
+    if (!can) return res.status(403).json({ success: false, message: 'Access denied' });
+
+    if (req.user.role === 'teacher' && !(req.body.reason && String(req.body.reason).trim())) {
+      return res.status(400).json({ success: false, message: 'Edit reason is mandatory for teachers' });
     }
 
     const fields = ['status', 'checkInTime', 'checkOutTime'];
@@ -347,6 +360,8 @@ async function softDeleteAttendance(req, res, next) {
     if (!attendance || attendance.isDeleted) {
       return res.status(404).json({ success: false, message: 'Attendance not found' });
     }
+    const can = await assertAttendanceAccess(req.user, attendance);
+    if (!can) return res.status(403).json({ success: false, message: 'Access denied' });
 
     attendance.editHistory.push({
       editedBy: req.user._id,
@@ -360,6 +375,13 @@ async function softDeleteAttendance(req, res, next) {
     attendance.deleteReason = reason;
     await attendance.save();
     await cacheDel(attendanceCacheKey(attendance.date, attendance.studentId));
+    await logAudit({
+      actorId: req.user._id,
+      action: 'attendance.delete',
+      entityType: 'Attendance',
+      entityId: attendance._id,
+      meta: { reason },
+    });
 
     emitAttendanceEvent('attendance:updated', { attendance: formatAttendanceDoc(attendance) });
     res.json({ success: true, message: 'Attendance soft-deleted', data: formatAttendanceDoc(attendance) });
@@ -375,6 +397,8 @@ async function readdAttendance(req, res, next) {
     if (!attendance.isDeleted) {
       return res.status(400).json({ success: false, message: 'Record is not deleted' });
     }
+    const can = await assertAttendanceAccess(req.user, attendance);
+    if (!can) return res.status(403).json({ success: false, message: 'Access denied' });
 
     attendance.editHistory.push({
       editedBy: req.user._id,
@@ -410,6 +434,13 @@ async function bulkUpdate(req, res, next) {
     const { error, value } = schema.validate(req.body);
     if (error) return res.status(400).json({ success: false, message: error.message });
 
+    const can = await assertClassAccess(req.user, value.classId);
+    if (!can) return res.status(403).json({ success: false, message: 'Not your class' });
+
+    if (req.user.role === 'teacher' && !(value.reason && String(value.reason).trim())) {
+      return res.status(400).json({ success: false, message: 'Bulk edit reason is mandatory for teachers' });
+    }
+
     const students = await Student.find({ classId: value.classId, status: 'active' });
     const results = [];
     for (const student of students) {
@@ -438,6 +469,13 @@ async function bulkUpdate(req, res, next) {
       await attendance.save();
       results.push(formatAttendanceDoc(attendance));
     }
+    await logAudit({
+      actorId: req.user._id,
+      action: 'attendance.bulk_update',
+      entityType: 'Class',
+      entityId: value.classId,
+      meta: { date: value.date, status: value.status, count: results.length },
+    });
     emitAttendanceEvent('attendance:updated', { bulk: true, count: results.length });
     res.json({ success: true, data: { updated: results.length, records: results } });
   } catch (err) {
@@ -452,6 +490,7 @@ async function getDefaulters(req, res, next) {
     const to = req.query.to || dayjs().format('YYYY-MM-DD');
     const filter = { date: { $gte: from, $lte: to }, isDeleted: false };
     if (req.query.classId) filter.classId = req.query.classId;
+    await applyAttendanceScope(req.user, filter);
 
     const records = await Attendance.find(filter).populate('studentId', 'name rollNo classId');
     const stats = {};

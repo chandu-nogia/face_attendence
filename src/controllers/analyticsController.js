@@ -9,13 +9,29 @@ const Class = require('../models/Class');
 const LeaveRequest = require('../models/LeaveRequest');
 const RegularizationRequest = require('../models/RegularizationRequest');
 const { todayDateString } = require('../services/timeFormatService');
+const { getScopedClassIds, assertClassAccess } = require('../utils/scopeHelper');
+
+async function resolveTeacherClassId(user, classId) {
+  if (classId) {
+    const ok = await assertClassAccess(user, classId);
+    if (!ok) return { denied: true };
+    return { classId };
+  }
+  const scoped = await getScopedClassIds(user);
+  if (scoped === null) return { classId: undefined };
+  if (!scoped.length) return { denied: true };
+  if (scoped.length === 1) return { classId: scoped[0] };
+  return { classId: scoped[0], forced: true, allowedClassIds: scoped };
+}
 
 async function overview(req, res, next) {
   try {
+    const scope = await resolveTeacherClassId(req.user, req.query.classId);
+    if (scope.denied) return res.status(403).json({ success: false, message: 'Access denied' });
     const data = await getAnalyticsOverview({
       from: req.query.from,
       to: req.query.to,
-      classId: req.query.classId,
+      classId: scope.classId,
     });
     res.json({ success: true, data });
   } catch (err) {
@@ -25,11 +41,13 @@ async function overview(req, res, next) {
 
 async function atRisk(req, res, next) {
   try {
+    const scope = await resolveTeacherClassId(req.user, req.query.classId);
+    if (scope.denied) return res.status(403).json({ success: false, message: 'Access denied' });
     const data = await getAtRiskStudents({
       threshold: req.query.threshold ? Number(req.query.threshold) : 75,
       from: req.query.from,
       to: req.query.to,
-      classId: req.query.classId,
+      classId: scope.classId,
     });
     res.json({ success: true, data });
   } catch (err) {

@@ -19,6 +19,10 @@ const attendanceSettingsSchema = new mongoose.Schema(
     notifyViaSms: { type: Boolean, default: false },
     kioskAllowedDeviceIds: [{ type: String }],
     periodWiseEnabled: { type: Boolean, default: false },
+    /** When true, teachers may enroll/create students in their assigned classes */
+    allowTeacherEnrollStudents: { type: Boolean, default: false },
+    /** Hours before pending teacher regularization auto-escalates to principal */
+    regularizationEscalateHours: { type: Number, default: 48 },
   },
   { timestamps: true }
 );

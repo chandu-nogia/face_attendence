@@ -3,6 +3,7 @@ const Student = require('../models/Student');
 const LeaveRequest = require('../models/LeaveRequest');
 const { formatAttendanceList } = require('../services/timeFormatService');
 const { dayjs } = require('../services/timeFormatService');
+const { assertStudentAccess, isElevated } = require('../utils/scopeHelper');
 
 function linkedStudentIds(user) {
   return (user.linkedStudents || []).map((id) => String(id));
@@ -11,22 +12,23 @@ function linkedStudentIds(user) {
 async function parentDashboard(req, res, next) {
   try {
     let studentIds = linkedStudentIds(req.user);
+    let students;
     if (req.user.role === 'student' && req.user.studentProfileId) {
       studentIds = [String(req.user.studentProfileId)];
     }
-    // Also find by parentUserId / email
     if (req.user.role === 'parent') {
-      const byLink = await Student.find({
+      students = await Student.find({
         $or: [
           { parentUserId: req.user._id },
           { parentEmail: req.user.email },
           { _id: { $in: studentIds } },
         ],
-      }).select('-faceEmbedding');
-      studentIds = byLink.map((s) => String(s._id));
-      var students = byLink;
+      }).select('-faceEmbedding -parentLinkPinHash');
+      studentIds = students.map((s) => String(s._id));
     } else {
-      var students = await Student.find({ _id: { $in: studentIds } }).select('-faceEmbedding');
+      students = await Student.find({ _id: { $in: studentIds } }).select(
+        '-faceEmbedding -parentLinkPinHash'
+      );
     }
 
     const today = dayjs().format('YYYY-MM-DD');
@@ -58,7 +60,7 @@ async function parentDashboard(req, res, next) {
 
     const pendingLeaves = await LeaveRequest.countDocuments({
       studentId: { $in: studentIds },
-      status: 'pending',
+      status: { $in: ['pending', 'pending_teacher', 'pending_admin'] },
     });
 
     res.json({
@@ -78,20 +80,9 @@ async function parentDashboard(req, res, next) {
 async function parentChildHistory(req, res, next) {
   try {
     const studentId = req.params.studentId;
-    const allowed =
-      req.user.role === 'admin' ||
-      req.user.role === 'principal' ||
-      linkedStudentIds(req.user).includes(studentId) ||
-      String(req.user.studentProfileId) === studentId;
-
-    if (!allowed && req.user.role === 'parent') {
-      const s = await Student.findById(studentId);
-      if (
-        !s ||
-        (String(s.parentUserId) !== String(req.user._id) && s.parentEmail !== req.user.email)
-      ) {
-        return res.status(403).json({ success: false, message: 'Access denied' });
-      }
+    const can = await assertStudentAccess(req.user, studentId);
+    if (!can && !isElevated(req.user)) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
     const from = req.query.from || dayjs().startOf('month').format('YYYY-MM-DD');

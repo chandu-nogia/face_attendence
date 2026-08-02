@@ -17,14 +17,14 @@ const router = express.Router();
 router.use(auth);
 router.post('/', role('admin', 'teacher', 'principal'), createStudent);
 router.get('/', listStudents);
-router.post('/bulk-import', role('admin', 'teacher', 'principal'), bulkImport);
+router.post('/bulk-import', role('admin', 'principal'), bulkImport);
 router.post(
   '/:id/generate-parent-pin',
   role('admin', 'teacher', 'principal'),
   generateParentPin
 );
 router.put('/:id', role('admin', 'teacher', 'principal'), updateStudent);
-router.delete('/:id', role('admin', 'teacher', 'principal'), deleteStudent);
+router.delete('/:id', role('admin', 'principal'), deleteStudent);
 router.post(
   '/:id/enroll-face',
   role('admin', 'teacher', 'principal'),

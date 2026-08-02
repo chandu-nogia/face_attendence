@@ -9,6 +9,7 @@ const { initRedis } = require('./src/config/redis');
 const { initSocket } = require('./src/socket/socketHandler');
 const { startCronJobs } = require('./src/jobs/autoAbsentCron');
 const { startMissingCheckoutCron } = require('./src/jobs/missingCheckoutCron');
+const { startRegularizationEscalateCron } = require('./src/jobs/regularizationEscalateCron');
 const logger = require('./src/utils/logger');
 
 const PORT = process.env.PORT || 5000;
@@ -26,6 +27,7 @@ async function bootstrap() {
   initSocket(server);
   startCronJobs();
   startMissingCheckoutCron();
+  startRegularizationEscalateCron();
 
   // Bind 0.0.0.0 so Render (and other hosts) can detect the open port
   server.listen(PORT, '0.0.0.0', () => {

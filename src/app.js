@@ -17,6 +17,7 @@ const leaveRoutes = require('./routes/leaveRoutes');
 const schoolRoutes = require('./routes/schoolRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
 const parentRoutes = require('./routes/parentRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 const app = express();
 
@@ -55,6 +56,7 @@ app.use('/api/leaves', leaveRoutes);
 app.use('/api/school', schoolRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/parent', parentRoutes);
+app.use('/api/users', userRoutes);
 
 app.use(errorHandler);
 

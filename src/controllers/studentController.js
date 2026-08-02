@@ -1,4 +1,4 @@
-const Joi = require('joi');
+﻿const Joi = require('joi');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const Student = require('../models/Student');
@@ -6,8 +6,11 @@ const Class = require('../models/Class');
 const { cloudinary, isCloudinaryConfigured } = require('../config/cloudinary');
 const {
   getScopedClassIds,
+  getScopedStudentIds,
   assertClassAccess,
   assertStudentAccess,
+  canTeacherEnrollStudents,
+  isElevated,
 } = require('../utils/scopeHelper');
 
 const createSchema = Joi.object({
@@ -24,6 +27,14 @@ async function createStudent(req, res, next) {
   try {
     const { error, value } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ success: false, message: error.message });
+
+    const canEnroll = await canTeacherEnrollStudents(req.user);
+    if (!canEnroll) {
+      return res.status(403).json({
+        success: false,
+        message: 'Teachers are not allowed to enroll students. Ask admin to enable it in school settings.',
+      });
+    }
 
     const klass = await Class.findById(value.classId);
     if (!klass) return res.status(404).json({ success: false, message: 'Class not found' });
@@ -52,16 +63,20 @@ async function listStudents(req, res, next) {
       ];
     }
 
-    const scoped = await getScopedClassIds(req.user);
-    if (scoped !== null) {
-      if (req.user.role === 'student') {
-        filter._id = req.user.studentProfileId;
-      } else if (req.query.classId) {
-        if (!scoped.map(String).includes(String(req.query.classId))) {
-          return res.json({ success: true, data: [] });
+    if (req.user.role === 'parent' || req.user.role === 'student') {
+      const ids = await getScopedStudentIds(req.user);
+      filter._id = { $in: ids };
+      delete filter.classId;
+    } else {
+      const scoped = await getScopedClassIds(req.user);
+      if (scoped !== null) {
+        if (req.query.classId) {
+          if (!scoped.map(String).includes(String(req.query.classId))) {
+            return res.json({ success: true, data: [] });
+          }
+        } else {
+          filter.classId = { $in: scoped };
         }
-      } else {
-        filter.classId = { $in: scoped };
       }
     }
 
@@ -78,16 +93,8 @@ async function listStudents(req, res, next) {
 async function updateStudent(req, res, next) {
   try {
     const allowed = [
-      'name',
-      'rollNo',
-      'parentContact',
-      'parentEmail',
-      'parentUserId',
-      'status',
-      'classId',
-      'faceEmbedding',
-      'photoUrls',
-      'leaveBalance',
+      'name', 'rollNo', 'parentContact', 'parentEmail', 'parentUserId',
+      'status', 'classId', 'faceEmbedding', 'photoUrls', 'leaveBalance',
     ];
     const updates = {};
     for (const key of allowed) {
@@ -96,6 +103,14 @@ async function updateStudent(req, res, next) {
 
     const existing = await Student.findById(req.params.id);
     if (!existing) return res.status(404).json({ success: false, message: 'Student not found' });
+
+    const can = await assertStudentAccess(req.user, existing._id);
+    if (!can) return res.status(403).json({ success: false, message: 'Access denied' });
+
+    if (req.user.role === 'teacher' && updates.classId && String(updates.classId) !== String(existing.classId)) {
+      const okNew = await assertClassAccess(req.user, updates.classId);
+      if (!okNew) return res.status(403).json({ success: false, message: 'Cannot move to that class' });
+    }
 
     const oldClassId = existing.classId?.toString();
     const newClassId = updates.classId ? String(updates.classId) : null;
@@ -125,6 +140,9 @@ async function updateStudent(req, res, next) {
 
 async function deleteStudent(req, res, next) {
   try {
+    if (!isElevated(req.user)) {
+      return res.status(403).json({ success: false, message: 'Admin/principal only' });
+    }
     const hard = req.query.hard === 'true' || req.body?.hard === true;
     const student = await Student.findById(req.params.id);
     if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
@@ -148,13 +166,22 @@ async function enrollFace(req, res, next) {
     const student = await Student.findById(req.params.id);
     if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
 
+    const can = await assertStudentAccess(req.user, student._id);
+    if (!can) return res.status(403).json({ success: false, message: 'Access denied' });
+
+    if (req.user.role === 'teacher') {
+      const canEnroll = await canTeacherEnrollStudents(req.user);
+      if (!canEnroll) {
+        return res.status(403).json({
+          success: false,
+          message: 'Teachers are not allowed to enroll faces unless admin enables it',
+        });
+      }
+    }
+
     let embedding = req.body.faceEmbedding;
     if (typeof embedding === 'string') {
-      try {
-        embedding = JSON.parse(embedding);
-      } catch (_) {
-        /* keep as-is */
-      }
+      try { embedding = JSON.parse(embedding); } catch (_) { /* keep */ }
     }
     if (!Array.isArray(embedding) || embedding.length === 0) {
       return res.status(400).json({ success: false, message: 'faceEmbedding array is required' });
@@ -200,6 +227,9 @@ async function enrollFace(req, res, next) {
 
 async function bulkImport(req, res, next) {
   try {
+    if (!isElevated(req.user)) {
+      return res.status(403).json({ success: false, message: 'Admin/principal only' });
+    }
     const students = req.body.students;
     if (!Array.isArray(students) || !students.length) {
       return res.status(400).json({ success: false, message: 'students array required' });
@@ -228,18 +258,12 @@ async function bulkImport(req, res, next) {
   }
 }
 
-/** Generate 6-digit PIN for parent linking (shown once) */
 async function generateParentPin(req, res, next) {
   try {
     const student = await Student.findById(req.params.id);
     if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
     const can = await assertStudentAccess(req.user, student._id);
-    if (!can && req.user.role === 'teacher') {
-      const ok = await assertClassAccess(req.user, student.classId);
-      if (!ok) return res.status(403).json({ success: false, message: 'Access denied' });
-    } else if (!can && !['admin', 'principal', 'teacher'].includes(req.user.role)) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
+    if (!can) return res.status(403).json({ success: false, message: 'Access denied' });
 
     const days = Number(req.body.expiresInDays || 7);
     const pin = String(crypto.randomInt(100000, 999999));

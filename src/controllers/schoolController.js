@@ -31,6 +31,8 @@ async function updateSchoolSettings(req, res, next) {
       'notifyViaSms',
       'kioskAllowedDeviceIds',
       'periodWiseEnabled',
+      'allowTeacherEnrollStudents',
+      'regularizationEscalateHours',
     ];
     const updates = {};
     for (const k of allowed) {

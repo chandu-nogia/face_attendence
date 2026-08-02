@@ -15,7 +15,7 @@ router.use(auth);
 router.post('/', role('admin', 'principal'), createClass);
 router.get('/', listClasses);
 router.get('/:id', getClass);
-router.put('/:id', role('admin', 'teacher', 'principal'), updateClass);
+router.put('/:id', role('admin', 'principal'), updateClass);
 router.delete('/:id', role('admin', 'principal'), deleteClass);
 
 module.exports = router;
