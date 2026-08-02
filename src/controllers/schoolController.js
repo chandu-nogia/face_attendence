@@ -66,13 +66,25 @@ async function updateSchoolSettings(req, res, next) {
     if (updates.blockCheckInAfterLateMinutes !== undefined) {
       updates.blockCheckInAfterLateMinutes = clamp(updates.blockCheckInAfterLateMinutes, 0, 480);
     }
+
+    // Ensure departure is after arrival when both provided / resulting
     const settings = await getSettings();
+    const next = { ...settings.toObject(), ...updates };
+    const startM = Number(next.schoolStartHour) * 60 + Number(next.schoolStartMinute || 0);
+    const endM = Number(next.schoolEndHour) * 60 + Number(next.schoolEndMinute || 0);
+    if (endM <= startM) {
+      return res.status(400).json({
+        success: false,
+        message: 'School end (jaane ka time) must be after school start (aane ka time)',
+      });
+    }
+
     Object.assign(settings, updates);
     await settings.save();
     invalidateSettingsCache();
     await logAudit({
       actorId: req.user._id,
-      action: 'settings.update',
+      action: 'settings.timing_update',
       entityType: 'AttendanceSettings',
       entityId: settings._id,
       meta: updates,
