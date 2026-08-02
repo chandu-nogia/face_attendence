@@ -19,8 +19,9 @@ async function bootstrap() {
   startCronJobs();
   startMissingCheckoutCron();
 
-  server.listen(PORT, () => {
-    logger.info(`Face Attendance Pro API listening on port ${PORT}`);
+  // Bind 0.0.0.0 so Render (and other hosts) can detect the open port
+  server.listen(PORT, '0.0.0.0', () => {
+    logger.info(`Face Attendance Pro API listening on 0.0.0.0:${PORT}`);
   });
 }
 
