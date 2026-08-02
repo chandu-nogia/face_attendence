@@ -1,6 +1,7 @@
 const {
   buildDailyReport,
   buildMonthlyReport,
+  buildRangeReport,
   streamPdfReport,
   streamExcelReport,
 } = require('../services/reportService');
@@ -31,14 +32,28 @@ async function monthly(req, res, next) {
   }
 }
 
+async function resolveExportRows(query) {
+  if (query.from || query.to) {
+    return buildRangeReport({
+      from: query.from,
+      to: query.to,
+      classId: query.classId,
+    });
+  }
+  return buildDailyReport({
+    date: query.date || dayjs().format('YYYY-MM-DD'),
+    classId: query.classId,
+  });
+}
+
 async function exportPdf(req, res, next) {
   try {
-    const report = await buildDailyReport({
-      date: req.query.date || dayjs().format('YYYY-MM-DD'),
-      classId: req.query.classId,
-    });
+    const report = await resolveExportRows(req.query);
     const className = report.records[0]?.className;
-    streamPdfReport(res, `Daily Attendance — ${report.date}`, report.records, {
+    const title = report.from && report.to && report.from !== report.to
+      ? `Attendance ${report.from} to ${report.to}`
+      : `Daily Attendance — ${report.date || report.from}`;
+    streamPdfReport(res, title, report.records, {
       className: req.query.classId ? className : 'All Classes',
     });
   } catch (err) {
@@ -48,11 +63,11 @@ async function exportPdf(req, res, next) {
 
 async function exportExcel(req, res, next) {
   try {
-    const report = await buildDailyReport({
-      date: req.query.date || dayjs().format('YYYY-MM-DD'),
-      classId: req.query.classId,
-    });
-    await streamExcelReport(res, `Daily Attendance ${report.date}`, report.records);
+    const report = await resolveExportRows(req.query);
+    const title = report.from && report.to && report.from !== report.to
+      ? `Attendance ${report.from} to ${report.to}`
+      : `Daily Attendance ${report.date || report.from}`;
+    await streamExcelReport(res, title, report.records);
   } catch (err) {
     next(err);
   }

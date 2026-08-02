@@ -17,6 +17,7 @@ const { emitAttendanceEvent } = require('../socket/socketHandler');
 const { getSettings } = require('../services/settingsService');
 const { notifyParentOfAttendance } = require('../services/notificationService');
 const { logAudit } = require('../services/auditService');
+const { getScopedClassIds } = require('../utils/scopeHelper');
 
 const markLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -244,6 +245,23 @@ async function getToday(req, res, next) {
   try {
     const filter = { date: todayDateString(), isDeleted: false };
     if (req.query.classId) filter.classId = req.query.classId;
+
+    const scoped = await getScopedClassIds(req.user);
+    if (scoped !== null) {
+      if (req.query.classId) {
+        if (!scoped.map(String).includes(String(req.query.classId))) {
+          return res.json({ success: true, data: [] });
+        }
+      } else {
+        filter.classId = { $in: scoped };
+      }
+    }
+
+    if (req.user.role === 'student' && req.user.studentProfileId) {
+      filter.studentId = req.user.studentProfileId;
+      delete filter.classId;
+    }
+
     const records = await Attendance.find(filter)
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')

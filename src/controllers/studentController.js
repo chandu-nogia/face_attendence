@@ -1,7 +1,14 @@
 const Joi = require('joi');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const Student = require('../models/Student');
 const Class = require('../models/Class');
 const { cloudinary, isCloudinaryConfigured } = require('../config/cloudinary');
+const {
+  getScopedClassIds,
+  assertClassAccess,
+  assertStudentAccess,
+} = require('../utils/scopeHelper');
 
 const createSchema = Joi.object({
   name: Joi.string().required(),
@@ -20,6 +27,8 @@ async function createStudent(req, res, next) {
 
     const klass = await Class.findById(value.classId);
     if (!klass) return res.status(404).json({ success: false, message: 'Class not found' });
+    const canAccess = await assertClassAccess(req.user, value.classId);
+    if (!canAccess) return res.status(403).json({ success: false, message: 'Not your class' });
 
     const student = await Student.create(value);
     klass.students.push(student._id);
@@ -42,9 +51,23 @@ async function listStudents(req, res, next) {
         { rollNo: new RegExp(req.query.search, 'i') },
       ];
     }
+
+    const scoped = await getScopedClassIds(req.user);
+    if (scoped !== null) {
+      if (req.user.role === 'student') {
+        filter._id = req.user.studentProfileId;
+      } else if (req.query.classId) {
+        if (!scoped.map(String).includes(String(req.query.classId))) {
+          return res.json({ success: true, data: [] });
+        }
+      } else {
+        filter.classId = { $in: scoped };
+      }
+    }
+
     const students = await Student.find(filter)
       .populate('classId', 'name section')
-      .select('-faceEmbedding')
+      .select('-faceEmbedding -parentLinkPinHash')
       .sort({ rollNo: 1 });
     res.json({ success: true, data: students });
   } catch (err) {
@@ -185,6 +208,11 @@ async function bulkImport(req, res, next) {
     const errors = [];
     for (const item of students) {
       try {
+        const can = await assertClassAccess(req.user, item.classId);
+        if (!can) {
+          errors.push({ item, error: 'Not your class' });
+          continue;
+        }
         const student = await Student.create(item);
         if (item.classId) {
           await Class.findByIdAndUpdate(item.classId, { $addToSet: { students: student._id } });
@@ -200,6 +228,41 @@ async function bulkImport(req, res, next) {
   }
 }
 
+/** Generate 6-digit PIN for parent linking (shown once) */
+async function generateParentPin(req, res, next) {
+  try {
+    const student = await Student.findById(req.params.id);
+    if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
+    const can = await assertStudentAccess(req.user, student._id);
+    if (!can && req.user.role === 'teacher') {
+      const ok = await assertClassAccess(req.user, student.classId);
+      if (!ok) return res.status(403).json({ success: false, message: 'Access denied' });
+    } else if (!can && !['admin', 'principal', 'teacher'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const days = Number(req.body.expiresInDays || 7);
+    const pin = String(crypto.randomInt(100000, 999999));
+    student.parentLinkPinHash = await bcrypt.hash(pin, 10);
+    student.parentLinkPinExpires = new Date(Date.now() + days * 86400000);
+    await student.save();
+
+    res.json({
+      success: true,
+      data: {
+        studentId: student._id,
+        name: student.name,
+        rollNo: student.rollNo,
+        pin,
+        expiresAt: student.parentLinkPinExpires,
+        message: 'Share this PIN with the parent. It will not be shown again.',
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   createStudent,
   listStudents,
@@ -207,4 +270,5 @@ module.exports = {
   deleteStudent,
   enrollFace,
   bulkImport,
+  generateParentPin,
 };

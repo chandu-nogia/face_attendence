@@ -95,6 +95,39 @@ async function buildMonthlyReport({ year, month, classId }) {
   return { year: y, month: Number(m), from, to, students };
 }
 
+async function buildRangeReport({ from, to, classId }) {
+  const start = from || dayjs().startOf('month').format('YYYY-MM-DD');
+  const end = to || dayjs().format('YYYY-MM-DD');
+  const records = await getAttendanceForRange({ classId, from: start, to: end });
+  return {
+    date: start === end ? start : undefined,
+    from: start,
+    to: end,
+    total: records.length,
+    present: records.filter((r) => r.status === 'present').length,
+    late: records.filter((r) => r.status === 'late').length,
+    absent: records.filter((r) => r.status === 'absent').length,
+    records: records.map((r) => {
+      const section = r.classId?.section;
+      const classLabel = r.classId
+        ? section
+          ? `${r.classId.name} - ${section}`
+          : r.classId.name
+        : '-';
+      return {
+        id: r._id,
+        studentName: r.studentId?.name || '-',
+        rollNo: r.studentId?.rollNo || '-',
+        className: classLabel,
+        status: (r.status || '-').toUpperCase(),
+        checkInTime: toAmPm(r.checkInTime) || '-',
+        checkOutTime: toAmPm(r.checkOutTime) || '-',
+        date: r.date,
+      };
+    }),
+  };
+}
+
 function drawTableHeader(doc, y, cols) {
   const startX = 40;
   doc.save();
@@ -138,70 +171,80 @@ function drawTableRow(doc, y, cols, values, stripe) {
 }
 
 function streamPdfReport(res, title, rows, meta = {}) {
-  const doc = new PDFDocument({ margin: 40, size: 'A4' });
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/\s+/g, '_')}.pdf"`);
-  doc.pipe(res);
+  try {
+    const doc = new PDFDocument({ margin: 40, size: 'A4', autoFirstPage: true });
+    const safeName = String(title || 'attendance').replace(/[^\w\-]+/g, '_').slice(0, 80);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pdf"`);
+    res.setHeader('Cache-Control', 'no-store');
+    doc.pipe(res);
 
-  doc.fontSize(18).fillColor('#C62828').font('Helvetica-Bold').text('Face Attendance Pro', { align: 'center' });
-  doc.moveDown(0.3);
-  doc.fontSize(13).fillColor('#424242').font('Helvetica').text(title, { align: 'center' });
-  doc.moveDown(0.4);
-  doc
-    .fontSize(9)
-    .fillColor('#616161')
-    .text(
-      `Generated: ${dayjs().format('DD MMM YYYY, hh:mm A')}` +
-        (meta.className ? `  |  Class: ${meta.className}` : '') +
-        `  |  Total: ${rows.length}`,
-      { align: 'center' }
-    );
-  doc.moveDown(0.8);
-
-  // Summary chips
-  const present = rows.filter((r) => String(r.status).toLowerCase() === 'present').length;
-  const late = rows.filter((r) => String(r.status).toLowerCase() === 'late').length;
-  const absent = rows.filter((r) => String(r.status).toLowerCase() === 'absent').length;
-  doc.fontSize(10).fillColor('#212121').font('Helvetica-Bold');
-  doc.text(`Present: ${present}    Late: ${late}    Absent: ${absent}    Records: ${rows.length}`);
-  doc.moveDown(0.6);
-
-  const cols = [
-    { label: '#', width: 28, align: 'left' },
-    { label: 'Roll', width: 55, align: 'left' },
-    { label: 'Student Name', width: 140, align: 'left' },
-    { label: 'Class', width: 90, align: 'left' },
-    { label: 'Status', width: 60, align: 'left' },
-    { label: 'Check In', width: 70, align: 'left' },
-    { label: 'Check Out', width: 72, align: 'left' },
-  ];
-
-  let y = doc.y;
-  y = drawTableHeader(doc, y, cols);
-
-  if (!rows.length) {
-    doc.fillColor('#757575').font('Helvetica').fontSize(11).text('No attendance records found.', 40, y + 16);
-  } else {
-    rows.forEach((row, i) => {
-      y = drawTableRow(
-        doc,
-        y,
-        cols,
-        [
-          i + 1,
-          row.rollNo,
-          row.studentName,
-          row.className,
-          row.status,
-          row.checkInTime,
-          row.checkOutTime,
-        ],
-        i % 2 === 1
+    doc.fontSize(18).fillColor('#C62828').font('Helvetica-Bold').text('Face Attendance Pro', { align: 'center' });
+    doc.moveDown(0.3);
+    doc.fontSize(13).fillColor('#424242').font('Helvetica').text(title, { align: 'center' });
+    doc.moveDown(0.4);
+    doc
+      .fontSize(9)
+      .fillColor('#616161')
+      .text(
+        `Generated: ${dayjs().format('DD MMM YYYY, hh:mm A')}` +
+          (meta.className ? `  |  Class: ${meta.className}` : '') +
+          `  |  Total: ${rows.length}`,
+        { align: 'center' }
       );
-    });
-  }
+    doc.moveDown(0.8);
 
-  doc.end();
+    const present = rows.filter((r) => String(r.status).toLowerCase() === 'present').length;
+    const late = rows.filter((r) => String(r.status).toLowerCase() === 'late').length;
+    const absent = rows.filter((r) => String(r.status).toLowerCase() === 'absent').length;
+    doc.fontSize(10).fillColor('#212121').font('Helvetica-Bold');
+    doc.text(`Present: ${present}    Late: ${late}    Absent: ${absent}    Records: ${rows.length}`);
+    doc.moveDown(0.6);
+
+    const hasDateCol = rows.some((r) => r.date);
+    const cols = hasDateCol
+      ? [
+          { label: '#', width: 24, align: 'left' },
+          { label: 'Date', width: 70, align: 'left' },
+          { label: 'Roll', width: 45, align: 'left' },
+          { label: 'Student', width: 110, align: 'left' },
+          { label: 'Class', width: 70, align: 'left' },
+          { label: 'Status', width: 55, align: 'left' },
+          { label: 'In', width: 70, align: 'left' },
+          { label: 'Out', width: 70, align: 'left' },
+        ]
+      : [
+          { label: '#', width: 28, align: 'left' },
+          { label: 'Roll', width: 55, align: 'left' },
+          { label: 'Student Name', width: 140, align: 'left' },
+          { label: 'Class', width: 90, align: 'left' },
+          { label: 'Status', width: 60, align: 'left' },
+          { label: 'Check In', width: 70, align: 'left' },
+          { label: 'Check Out', width: 72, align: 'left' },
+        ];
+
+    let y = doc.y;
+    y = drawTableHeader(doc, y, cols);
+
+    if (!rows.length) {
+      doc.fillColor('#757575').font('Helvetica').fontSize(11).text('No attendance records found.', 40, y + 16);
+    } else {
+      rows.forEach((row, i) => {
+        const values = hasDateCol
+          ? [i + 1, row.date, row.rollNo, row.studentName, row.className, row.status, row.checkInTime, row.checkOutTime]
+          : [i + 1, row.rollNo, row.studentName, row.className, row.status, row.checkInTime, row.checkOutTime];
+        y = drawTableRow(doc, y, cols, values, i % 2 === 1);
+      });
+    }
+
+    doc.end();
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: err.message || 'PDF generation failed' });
+    } else {
+      res.end();
+    }
+  }
 }
 
 async function streamExcelReport(res, title, rows) {
@@ -239,6 +282,7 @@ module.exports = {
   getAttendanceForRange,
   buildDailyReport,
   buildMonthlyReport,
+  buildRangeReport,
   streamPdfReport,
   streamExcelReport,
 };

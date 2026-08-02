@@ -1,5 +1,15 @@
 const mongoose = require('mongoose');
 
+const reviewSchema = new mongoose.Schema(
+  {
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: { type: Date },
+    note: { type: String },
+    decision: { type: String, enum: ['approve', 'reject'] },
+  },
+  { _id: false }
+);
+
 const leaveRequestSchema = new mongoose.Schema(
   {
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
@@ -15,10 +25,12 @@ const leaveRequestSchema = new mongoose.Schema(
     proofUrl: { type: String },
     status: {
       type: String,
-      enum: ['pending', 'approved', 'rejected'],
-      default: 'pending',
+      enum: ['pending_teacher', 'pending_admin', 'approved', 'rejected', 'pending'],
+      default: 'pending_teacher',
       index: true,
     },
+    teacherReview: reviewSchema,
+    adminReview: reviewSchema,
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     reviewedAt: { type: Date },
     reviewNote: { type: String },
