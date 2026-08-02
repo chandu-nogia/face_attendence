@@ -58,11 +58,30 @@ async function updateStudent(req, res, next) {
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
+
+    const existing = await Student.findById(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: 'Student not found' });
+
+    const oldClassId = existing.classId?.toString();
+    const newClassId = updates.classId ? String(updates.classId) : null;
+
+    if (newClassId) {
+      const klass = await Class.findById(newClassId);
+      if (!klass) return res.status(404).json({ success: false, message: 'Class not found' });
+    }
+
     const student = await Student.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
-    }).select('-faceEmbedding');
-    if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
+    })
+      .populate('classId', 'name section')
+      .select('-faceEmbedding');
+
+    if (newClassId && oldClassId && newClassId !== oldClassId) {
+      await Class.findByIdAndUpdate(oldClassId, { $pull: { students: student._id } });
+      await Class.findByIdAndUpdate(newClassId, { $addToSet: { students: student._id } });
+    }
+
     res.json({ success: true, data: student });
   } catch (err) {
     next(err);
@@ -71,12 +90,18 @@ async function updateStudent(req, res, next) {
 
 async function deleteStudent(req, res, next) {
   try {
-    const student = await Student.findByIdAndUpdate(
-      req.params.id,
-      { status: 'inactive' },
-      { new: true }
-    );
+    const hard = req.query.hard === 'true' || req.body?.hard === true;
+    const student = await Student.findById(req.params.id);
     if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
+
+    if (hard) {
+      await Class.updateMany({ students: student._id }, { $pull: { students: student._id } });
+      await Student.findByIdAndDelete(student._id);
+      return res.json({ success: true, message: 'Student permanently deleted' });
+    }
+
+    student.status = 'inactive';
+    await student.save();
     res.json({ success: true, message: 'Student deactivated', data: student });
   } catch (err) {
     next(err);

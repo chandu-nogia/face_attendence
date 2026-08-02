@@ -23,7 +23,8 @@ async function buildDailyReport({ date, classId }) {
   if (classId) filter.classId = classId;
   const records = await Attendance.find(filter)
     .populate('studentId', 'name rollNo')
-    .populate('classId', 'name section');
+    .populate('classId', 'name section')
+    .sort({ 'studentId.rollNo': 1 });
 
   const summary = {
     date: filter.date,
@@ -33,15 +34,23 @@ async function buildDailyReport({ date, classId }) {
     absent: records.filter((r) => r.status === 'absent').length,
     halfDay: records.filter((r) => r.status === 'half-day').length,
     leave: records.filter((r) => r.status === 'leave').length,
-    records: records.map((r) => ({
-      id: r._id,
-      studentName: r.studentId?.name,
-      rollNo: r.studentId?.rollNo,
-      className: r.classId?.name,
-      status: r.status,
-      checkInTime: toAmPm(r.checkInTime),
-      checkOutTime: toAmPm(r.checkOutTime),
-    })),
+    records: records.map((r) => {
+      const section = r.classId?.section;
+      const classLabel = r.classId
+        ? section
+          ? `${r.classId.name} - ${section}`
+          : r.classId.name
+        : '-';
+      return {
+        id: r._id,
+        studentName: r.studentId?.name || '-',
+        rollNo: r.studentId?.rollNo || '-',
+        className: classLabel,
+        status: (r.status || '-').toUpperCase(),
+        checkInTime: toAmPm(r.checkInTime) || '-',
+        checkOutTime: toAmPm(r.checkOutTime) || '-',
+      };
+    }),
   };
   return summary;
 }
@@ -86,19 +95,112 @@ async function buildMonthlyReport({ year, month, classId }) {
   return { year: y, month: Number(m), from, to, students };
 }
 
-function streamPdfReport(res, title, rows) {
-  const doc = new PDFDocument({ margin: 40 });
+function drawTableHeader(doc, y, cols) {
+  const startX = 40;
+  doc.save();
+  doc.rect(startX, y, 515, 22).fill('#C62828');
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(9);
+  let x = startX + 4;
+  cols.forEach((c) => {
+    doc.text(c.label, x, y + 6, { width: c.width, align: c.align || 'left' });
+    x += c.width;
+  });
+  doc.restore();
+  return y + 22;
+}
+
+function drawTableRow(doc, y, cols, values, stripe) {
+  const startX = 40;
+  const rowH = 20;
+  if (y > 750) {
+    doc.addPage();
+    y = 40;
+    y = drawTableHeader(doc, y, cols);
+  }
+  if (stripe) {
+    doc.save();
+    doc.rect(startX, y, 515, rowH).fill('#FFF5F5');
+    doc.restore();
+  }
+  doc.fillColor('#212121').font('Helvetica').fontSize(9);
+  let x = startX + 4;
+  values.forEach((v, i) => {
+    doc.text(String(v ?? '-'), x, y + 5, { width: cols[i].width - 4, align: cols[i].align || 'left' });
+    x += cols[i].width;
+  });
+  doc
+    .moveTo(startX, y + rowH)
+    .lineTo(startX + 515, y + rowH)
+    .strokeColor('#E0E0E0')
+    .lineWidth(0.5)
+    .stroke();
+  return y + rowH;
+}
+
+function streamPdfReport(res, title, rows, meta = {}) {
+  const doc = new PDFDocument({ margin: 40, size: 'A4' });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/\s+/g, '_')}.pdf"`);
   doc.pipe(res);
-  doc.fontSize(18).fillColor('#C62828').text(title, { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(10).fillColor('#000');
-  rows.forEach((row, i) => {
-    doc.text(
-      `${i + 1}. ${row.studentName || '-'} (${row.rollNo || '-'}) | ${row.status} | In: ${row.checkInTime || '-'} | Out: ${row.checkOutTime || '-'}`
+
+  doc.fontSize(18).fillColor('#C62828').font('Helvetica-Bold').text('Face Attendance Pro', { align: 'center' });
+  doc.moveDown(0.3);
+  doc.fontSize(13).fillColor('#424242').font('Helvetica').text(title, { align: 'center' });
+  doc.moveDown(0.4);
+  doc
+    .fontSize(9)
+    .fillColor('#616161')
+    .text(
+      `Generated: ${dayjs().format('DD MMM YYYY, hh:mm A')}` +
+        (meta.className ? `  |  Class: ${meta.className}` : '') +
+        `  |  Total: ${rows.length}`,
+      { align: 'center' }
     );
-  });
+  doc.moveDown(0.8);
+
+  // Summary chips
+  const present = rows.filter((r) => String(r.status).toLowerCase() === 'present').length;
+  const late = rows.filter((r) => String(r.status).toLowerCase() === 'late').length;
+  const absent = rows.filter((r) => String(r.status).toLowerCase() === 'absent').length;
+  doc.fontSize(10).fillColor('#212121').font('Helvetica-Bold');
+  doc.text(`Present: ${present}    Late: ${late}    Absent: ${absent}    Records: ${rows.length}`);
+  doc.moveDown(0.6);
+
+  const cols = [
+    { label: '#', width: 28, align: 'left' },
+    { label: 'Roll', width: 55, align: 'left' },
+    { label: 'Student Name', width: 140, align: 'left' },
+    { label: 'Class', width: 90, align: 'left' },
+    { label: 'Status', width: 60, align: 'left' },
+    { label: 'Check In', width: 70, align: 'left' },
+    { label: 'Check Out', width: 72, align: 'left' },
+  ];
+
+  let y = doc.y;
+  y = drawTableHeader(doc, y, cols);
+
+  if (!rows.length) {
+    doc.fillColor('#757575').font('Helvetica').fontSize(11).text('No attendance records found.', 40, y + 16);
+  } else {
+    rows.forEach((row, i) => {
+      y = drawTableRow(
+        doc,
+        y,
+        cols,
+        [
+          i + 1,
+          row.rollNo,
+          row.studentName,
+          row.className,
+          row.status,
+          row.checkInTime,
+          row.checkOutTime,
+        ],
+        i % 2 === 1
+      );
+    });
+  }
+
   doc.end();
 }
 
@@ -107,14 +209,22 @@ async function streamExcelReport(res, title, rows) {
   const sheet = workbook.addWorksheet('Attendance');
   sheet.columns = [
     { header: '#', key: 'idx', width: 6 },
-    { header: 'Student', key: 'studentName', width: 24 },
     { header: 'Roll No', key: 'rollNo', width: 12 },
+    { header: 'Student', key: 'studentName', width: 24 },
+    { header: 'Class', key: 'className', width: 18 },
     { header: 'Status', key: 'status', width: 12 },
     { header: 'Check In', key: 'checkInTime', width: 14 },
     { header: 'Check Out', key: 'checkOutTime', width: 14 },
   ];
   rows.forEach((row, i) => sheet.addRow({ idx: i + 1, ...row }));
-  sheet.getRow(1).font = { bold: true, color: { argb: 'FFC62828' } };
+  const header = sheet.getRow(1);
+  header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  header.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFC62828' },
+  };
+  header.alignment = { vertical: 'middle', horizontal: 'center' };
 
   res.setHeader(
     'Content-Type',

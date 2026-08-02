@@ -37,7 +37,10 @@ async function exportPdf(req, res, next) {
       date: req.query.date || dayjs().format('YYYY-MM-DD'),
       classId: req.query.classId,
     });
-    streamPdfReport(res, `Daily Attendance ${report.date}`, report.records);
+    const className = report.records[0]?.className;
+    streamPdfReport(res, `Daily Attendance — ${report.date}`, report.records, {
+      className: req.query.classId ? className : 'All Classes',
+    });
   } catch (err) {
     next(err);
   }
