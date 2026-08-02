@@ -1,4 +1,7 @@
-require('dotenv').config();
+// On Render, use Dashboard env vars only — never a committed .env with localhost
+if (!process.env.RENDER && !process.env.RENDER_EXTERNAL_URL) {
+  require('dotenv').config();
+}
 const http = require('http');
 const app = require('./src/app');
 const connectDB = require('./src/config/db');
@@ -11,6 +14,11 @@ const logger = require('./src/utils/logger');
 const PORT = process.env.PORT || 5000;
 
 async function bootstrap() {
+  const mongoHint = process.env.MONGODB_URI
+    ? process.env.MONGODB_URI.replace(/\/\/([^:]+):([^@]+)@/, '//$1:***@').slice(0, 80)
+    : '(not set — will fail on Render)';
+  logger.info(`Starting… PORT=${PORT} MONGODB_URI=${mongoHint}`);
+
   await connectDB();
   await initRedis();
 
